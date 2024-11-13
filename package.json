@@ -1,0 +1,47 @@
+{
+  "name": "clean-tests",
+  "version": "0.0.1",
+  "description": "Clean tests with isolated scope ✅️️",
+  "author": "uid11",
+  "bugs": "https://github.com/uid11/clean-tests/issues",
+  "devDependencies": {
+    "prettier": ">=3.3",
+    "typescript": ">=5.6"
+  },
+  "exports": {
+    ".": {
+      "import": "./index.js",
+      "require": "./index.cjs",
+      "types": "./index.d.ts"
+    }
+  },
+  "files": [
+    "index.cjs",
+    "index.js",
+    "index.d.ts",
+    "types.d.ts"
+  ],
+  "homepage": "https://github.com/uid11/clean-tests#readme",
+  "keywords": [
+    "clean code",
+    "tests",
+    "unit tests"
+  ],
+  "license": "MIT",
+  "packageManager": "npm@10",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/uid11/clean-tests"
+  },
+  "scripts": {
+    "prettier": "prettier --cache --cache-strategy=content --write . !package-lock.json",
+    "prebuild": "rm -f *.cjs *.js *.d.ts",
+    "build": "tsc",
+    "postbuild": "node ./convertEsmToCjs.js",
+    "test": "export _START=$(date +%s%3N) && npm run prettier && npm run build && node ./index.spec.js",
+    "prepublishOnly": "npm test"
+  },
+  "sideEffects": false,
+  "type": "module",
+  "types": "index.d.ts"
+}
