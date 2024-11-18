@@ -44,8 +44,8 @@ export type Options<Test extends BaseTest> = Partial<RunOptions<Test>>;
 
 export type Runner<Test extends BaseTest> = Generator<
   RunnerState,
-  RunnerState,
-  InterruptedRunStatus | TestUnit<Test> | undefined
+  undefined,
+  'interrupted' | TestUnit<Test> | undefined
 >;
 
 export type RunnerState = Readonly<
@@ -76,7 +76,9 @@ export type RunOptions<Test extends BaseTest> = Readonly<{
   testTimeout: number;
 }>;
 
-export type RunningTestResult = TestResult<'failed' | 'passed' | 'timedOut'>;
+export type RunningTestResult = TestResult<RunningTestStatus>;
+
+export type RunningTestStatus = 'failed' | 'passed' | 'timedOut';
 
 export type RunStatus =
   | 'failed'
@@ -97,16 +99,15 @@ export type RunResult = Readonly<{
 
 export type SetTimeout = (handler: () => void, timeout: number) => unknown;
 
-export type Status =
-  | 'failed'
-  | 'interrupted'
-  | 'passed'
-  | 'skipped'
-  | 'timedOut'
-  | 'todo'
-  | 'wasNotRun';
+export type Status = RunningTestStatus | 'interrupted' | 'skipped' | 'todo' | 'wasNotRun';
 
-export type Task = {readonly clear: () => void; done: boolean; readonly end: Promise<void>};
+export type Task<Test extends BaseTest> = {
+  readonly clear: () => void;
+  done: boolean;
+  readonly end: Promise<void>;
+  readonly startTime: Date;
+  readonly unit: TestUnit<Test>;
+};
 
 export type TestEndEvent<Test extends BaseTest> = Readonly<{result: TestResult; test: Test}>;
 

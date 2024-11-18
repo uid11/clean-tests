@@ -7,6 +7,8 @@ import type {
   Mutable,
   Options,
   Runner,
+  RunningTestResult,
+  RunningTestStatus,
   RunOptions,
   RunResult,
   SetTimeout,
@@ -17,8 +19,6 @@ import type {
   TestUnit,
   TestUnits,
 } from './types';
-
-// var fn = new Function('"use strict";var{bar,bar1,bar2,bar3}=this.scope;return eval(this.source)');
 
 export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test> {
   constructor(name: string, options?: Options<Test>);
@@ -84,7 +84,7 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
     this.tests.push(test);
   }
 
-  protected bodiesCache: Record<string, Function> | undefined;
+  protected bodiesCache: Record<string, Function> = Object.create(null);
 
   protected cachedBodiesCreator: CachedBodiesCreator | undefined;
 
@@ -119,11 +119,10 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
   protected *getRunner(options: Options<Test>): Runner<Test> {
     const {concurrency = this.concurrency} = options;
     let resolve: () => void = () => {};
-    const tasks: Set<Task> = new Set();
-    let runStatus: InterruptedRunStatus | undefined;
+    const tasks: Set<Task<Test>> = new Set();
     const testUnits: TestUnit<Test>[] = [];
 
-    while (runStatus === undefined) {
+    while (true) {
       let isAtMaxConcurrency = !(tasks.size < concurrency);
 
       if (isAtMaxConcurrency || testUnits.length === 0) {
@@ -140,8 +139,7 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
 
         isAtMaxConcurrency = !(tasks.size < concurrency);
 
-        if (typeof unit === 'string') {
-          runStatus = unit;
+        if (unit === 'interrupted') {
           break;
         }
 
@@ -176,7 +174,14 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
       task.end.then(handler, handler);
     }
 
-    runStatus;
+    for (const unit of testUnits) {
+      this.endTest(options, unit, {status: 'wasNotRun'});
+    }
+
+    for (const {clear, startTime, unit} of tasks) {
+      clear();
+      this.endTest(options, unit, {startTime, status: 'interrupted'});
+    }
   }
 
   protected *getTestUnits(options: Options<Test>): TestUnits<Test> {}
@@ -196,7 +201,8 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
   retries = 0;
 
   async run(options: Options<Test> = {}): Promise<RunResult> {
-    const start = this.now();
+    const {now = this.now} = options;
+    const start = now();
 
     let runStatus: InterruptedRunStatus | undefined;
     let signalHandler: (() => void) | undefined;
@@ -237,7 +243,7 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
       }
 
       const unit = testUnits.next().value;
-      const {isAtMaxConcurrency, nextTestEnd} = runner.next(unit).value;
+      const {isAtMaxConcurrency = false, nextTestEnd} = runner.next(unit).value ?? {};
 
       if (nextTestEnd === undefined && unit === undefined) {
         break;
@@ -256,7 +262,7 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
 
     if (runStatus !== undefined) {
       this.runResult.runStatus = runStatus;
-      runner.next(runStatus);
+      runner.next('interrupted');
     }
 
     for (const unit of testUnits) {
@@ -265,14 +271,123 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
       }
     }
 
-    this.runResult.duration = this.now() - start;
+    this.runResult.duration = now() - start;
 
     return this.runResult;
   }
 
   protected runResult: Mutable<RunResult> | undefined;
 
-  protected runTestUnit(options: Options<Test>, unit: TestUnit<Test>): Task | undefined {}
+  protected runTestUnit(options: Options<Test>, unit: TestUnit<Test>): Task | undefined {
+    const {test} = unit;
+
+    if (unit.status !== undefined) {
+      this.endTest(options, unit, {status: unit.status});
+
+      return;
+    }
+
+    const {body, fail, parameters} = test;
+
+    if (typeof body !== 'function') {
+      this.endTest(options, unit, {status: 'todo'});
+
+      return;
+    }
+
+    if (this.cachedBodiesCreator === undefined) {
+      const names = Object.keys(this.scope).join(',');
+
+      this.bodiesCache = Object.create(null);
+      this.cachedBodiesCreator = new Function(
+        `"use strict";var{${names}}=this.scope;return eval(this.source)`,
+      ) as CachedBodiesCreator;
+    }
+
+    const source = String(body);
+
+    let bodyWithScope = this.bodiesCache[source];
+
+    if (bodyWithScope === undefined) {
+      bodyWithScope = this.cachedBodiesCreator.call({scope: this.scope, source}) as Function;
+      this.bodiesCache[source] = bodyWithScope;
+    }
+
+    let error: unknown;
+    let hasError = false;
+    let isEnded = false;
+    let resolve: (() => void) | undefined;
+    let result: unknown;
+    let status: RunningTestStatus | undefined;
+
+    const {
+      clearTimeout = this.clearTimeout,
+      now = this.now,
+      setTimeout = this.setTimeout,
+    } = options;
+
+    const onEnd = (): void => {
+      if (isEnded) {
+        return;
+      }
+
+      const duration = now() - start;
+
+      isEnded = true;
+      status = status ?? (hasError === fail ? 'passed' : 'failed');
+      resolve?.();
+
+      const testResult: RunningTestResult = {duration, error, hasError, startTime, status};
+
+      this.endTest(options, unit, testResult);
+    };
+
+    const startTime = new Date();
+    const start = now();
+
+    try {
+      result = bodyWithScope(...parameters);
+    } catch (catchedError) {
+      error = catchedError;
+      hasError = true;
+    }
+
+    if (!(result instanceof Object) || !('then' in result) || typeof result.then !== 'function') {
+      onEnd();
+
+      return;
+    }
+
+    const end = new Promise<void>((res) => {
+      resolve = res;
+    });
+
+    const timePassed = now() - start;
+
+    const timeoutId = setTimeout(() => {
+      status = 'timedOut';
+      onEnd();
+    }, test.timeout - timePassed);
+
+    const clear = (): void => {
+      clearTimeout(timeoutId as number);
+    };
+
+    result.then(
+      () => {
+        onEnd();
+      },
+      (catchedError: unknown) => {
+        error = catchedError;
+        hasError = true;
+        onEnd();
+      },
+    );
+
+    const task: Task<Test> = {clear, done: false, end, startTime, unit};
+
+    return task;
+  }
 
   scope: Record<string, Function>;
 
@@ -292,3 +407,5 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
     result: TestResult,
   ): void {}
 }
+
+export type * from './types';
