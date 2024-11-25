@@ -26,11 +26,12 @@ export type ClearTimeout = (id: number) => void;
 export type EndTestResult =
   | RunningTestResult
   | Readonly<{startTime: Date; status: 'interrupted'}>
-  | Readonly<{status: 'skipped'}>
-  | Readonly<{status: 'todo'}>
-  | Readonly<{status: 'wasNotRun'}>;
+  | WithStatus<NotRunningTestStatus>;
 
-export type InterruptedRunStatus = Exclude<RunStatus, 'failed' | 'passed'>;
+export type InterruptedRunStatus =
+  | 'interruptedByMaxFailures'
+  | 'interruptedBySignal'
+  | 'interruptedByTimeout';
 
 /**
  * Returns a copy of the object type with mutable properties.
@@ -39,6 +40,12 @@ export type InterruptedRunStatus = Exclude<RunStatus, 'failed' | 'passed'>;
 export type Mutable<Type> = {
   -readonly [Key in keyof Type]: Type[Key];
 };
+
+export type MutableRunResult<Test extends BaseTest> = Mutable<
+  Omit<RunResult<Test>, 'onTestEndErrors' | 'onTestStartErrors'>
+> & {onTestEndErrors: TestEndError<Test>[]; onTestStartErrors: TestStartError<Test>[]};
+
+export type NotRunningTestStatus = 'skipped' | 'todo' | 'wasNotRun';
 
 export type Options<Test extends BaseTest> = Partial<RunOptions<Test>>;
 
@@ -59,15 +66,9 @@ export type RunOptions<Test extends BaseTest> = Readonly<{
   filterTests: (this: Suite<Test>, test: Test) => boolean;
   maxFailures: number;
   name: string;
-  now: () => number;
-  /**
-   * Call for all tests from `getTestUnits`.
-   */
-  onTestStart: Function;
-  /**
-   * Call for all tests from `getTestUnits`.
-   */
-  onTestEnd: Function;
+  now: (this: void) => number;
+  onTestStart: (this: void, event: TestStartEvent<Test>) => void;
+  onTestEnd: (this: void, event: TestEndEvent<Test>) => void;
   repeats: number;
   retries: number;
   runTimeout: number;
@@ -80,16 +81,13 @@ export type RunningTestResult = TestResult<RunningTestStatus>;
 
 export type RunningTestStatus = 'failed' | 'passed' | 'timedOut';
 
-export type RunStatus =
-  | 'failed'
-  | 'passed'
-  | 'interruptedByMaxFailures'
-  | 'interruptedBySignal'
-  | 'interruptedByTimeout';
+export type RunStatus = InterruptedRunStatus | 'failed' | 'passed';
 
-export type RunResult = Readonly<{
+export type RunResult<Test extends BaseTest> = Readonly<{
   duration: number;
   name: string;
+  onTestEndErrors: readonly TestEndError<Test>[];
+  onTestStartErrors: readonly TestStartError<Test>[];
   runStatus: RunStatus;
   startTime: Date;
   testsInRun: number;
@@ -99,7 +97,7 @@ export type RunResult = Readonly<{
 
 export type SetTimeout = (handler: () => void, timeout: number) => unknown;
 
-export type Status = RunningTestStatus | 'interrupted' | 'skipped' | 'todo' | 'wasNotRun';
+export type Status = NotRunningTestStatus | 'interrupted' | RunningTestStatus;
 
 export type Task<Test extends BaseTest> = {
   readonly clear: () => void;
@@ -108,6 +106,11 @@ export type Task<Test extends BaseTest> = {
   readonly startTime: Date;
   readonly unit: TestUnit<Test>;
 };
+
+export type TestEndError<Test extends BaseTest> = Readonly<{
+  error: unknown;
+  event: TestEndEvent<Test>;
+}>;
 
 export type TestEndEvent<Test extends BaseTest> = Readonly<{result: TestResult; test: Test}>;
 
@@ -119,14 +122,19 @@ export type TestResult<SomeStatus extends Status = Status> = Readonly<{
   status: SomeStatus;
 }>;
 
+export type TestStartError<Test extends BaseTest> = Readonly<{
+  error: unknown;
+  event: TestStartEvent<Test>;
+}>;
+
 export type TestStartEvent<Test extends BaseTest> = Readonly<{
-  status: 'skipped' | 'todo' | 'wasNotRun' | undefined;
+  status: NotRunningTestStatus | undefined;
   test: Test;
 }>;
 
 export type TestUnit<Test extends BaseTest> = Readonly<{
   onEnd: ((result: TestResult) => void) | undefined;
-  status: 'skipped' | 'todo' | undefined;
+  status: Exclude<NotRunningTestStatus, 'wasNotRun'> | undefined;
   test: Test;
 }>;
 
@@ -135,3 +143,7 @@ export type TestUnits<Test extends BaseTest> = Generator<
   undefined,
   undefined
 >;
+
+type WithStatus<SomeStatus extends Status> = SomeStatus extends Status
+  ? Readonly<{status: SomeStatus}>
+  : never;

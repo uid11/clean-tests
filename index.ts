@@ -5,6 +5,7 @@ import type {
   EndTestResult,
   InterruptedRunStatus,
   Mutable,
+  MutableRunResult,
   Options,
   Runner,
   RunningTestResult,
@@ -39,9 +40,9 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
   addFunctionToScope(fn: Function, name?: string): void {
     if (name === undefined) {
       name = fn.name;
-    } else {
-      // TODO check name by RegExp
     }
+
+    this.assertFunctionName(name);
 
     if (name in this.scope) {
       throw new Error(`Function "${name}" already exists in the scope: ${this.scope[name]}`);
@@ -84,6 +85,18 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
     this.tests.push(test);
   }
 
+  protected assertFunctionName(name: string): void {
+    try {
+      if (!/^[\p{ID_Continue}$]+$/u.test(name)) {
+        throw undefined;
+      }
+
+      new Function(name, '');
+    } catch {
+      throw new Error(`The function name "${name}" is not a valid identifier`);
+    }
+  }
+
   protected bodiesCache: Record<string, Function> = Object.create(null);
 
   protected cachedBodiesCreator: CachedBodiesCreator | undefined;
@@ -92,18 +105,59 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
 
   concurrency = 1;
 
-  protected endTest(options: Options<Test>, unit: TestUnit<Test>, result: EndTestResult): void {}
+  protected endTest(options: Options<Test>, unit: TestUnit<Test>, endResult: EndTestResult): void {
+    const {onTestEnd = this.onTestEnd, onTestStart = this.onTestStart} = options;
+    let result: TestResult;
+    const {status} = endResult;
+    const {test} = unit;
+
+    if (status === 'interrupted') {
+      result = {
+        duration: Date.now() - Number(endResult.startTime),
+        error: undefined,
+        hasError: false,
+        startTime: endResult.startTime,
+        status,
+      };
+    } else if (status === 'skipped' || status === 'todo' || status === 'wasNotRun') {
+      const event: TestStartEvent<Test> = {status, test};
+
+      try {
+        onTestStart(event);
+      } catch (error) {
+        this.runResult?.onTestStartErrors.push({error, event});
+      }
+
+      result = {duration: 0, error: undefined, hasError: false, startTime: new Date(), status};
+    } else {
+      result = endResult;
+    }
+
+    this.updateRunResult(options, unit, result);
+
+    const event: TestEndEvent<Test> = {result, test};
+
+    try {
+      onTestEnd(event);
+    } catch (error) {
+      this.runResult?.onTestEndErrors.push({error, event});
+    }
+
+    unit.onEnd?.(result);
+  }
 
   filterTests() {
     return true;
   }
 
-  protected getInitialRunResult(options: Options<Test>): RunResult {
+  protected getInitialRunResult(options: Options<Test>): MutableRunResult<Test> {
     return {
       duration: 0,
       failed: 0,
       interrupted: 0,
       name: options.name ?? this.name,
+      onTestEndErrors: [],
+      onTestStartErrors: [],
       passed: 0,
       runStatus: 'passed',
       skipped: 0,
@@ -200,7 +254,7 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
 
   retries = 0;
 
-  async run(options: Options<Test> = {}): Promise<RunResult> {
+  async run(options: Options<Test> = {}): Promise<RunResult<Test>> {
     const {now = this.now} = options;
     const start = now();
 
@@ -276,9 +330,9 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
     return this.runResult;
   }
 
-  protected runResult: Mutable<RunResult> | undefined;
+  protected runResult: MutableRunResult<Test> | undefined;
 
-  protected runTestUnit(options: Options<Test>, unit: TestUnit<Test>): Task | undefined {
+  protected runTestUnit(options: Options<Test>, unit: TestUnit<Test>): Task<Test> | undefined {
     const {test} = unit;
 
     if (unit.status !== undefined) {
@@ -313,9 +367,9 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
       this.bodiesCache[source] = bodyWithScope;
     }
 
+    let clear: (() => void) | undefined;
     let error: unknown;
     let hasError = false;
-    let isEnded = false;
     let resolve: (() => void) | undefined;
     let result: unknown;
     let status: RunningTestStatus | undefined;
@@ -323,24 +377,30 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
     const {
       clearTimeout = this.clearTimeout,
       now = this.now,
+      onTestStart = this.onTestStart,
       setTimeout = this.setTimeout,
     } = options;
 
-    const onEnd = (): void => {
-      if (isEnded) {
-        return;
-      }
-
+    let onEnd = (): void => {
       const duration = now() - start;
 
-      isEnded = true;
+      onEnd = () => {};
       status = status ?? (hasError === fail ? 'passed' : 'failed');
+      clear?.();
       resolve?.();
 
       const testResult: RunningTestResult = {duration, error, hasError, startTime, status};
 
       this.endTest(options, unit, testResult);
     };
+
+    const event: TestStartEvent<Test> = {status: undefined, test};
+
+    try {
+      onTestStart(event);
+    } catch (error) {
+      this.runResult?.onTestStartErrors.push({error, event});
+    }
 
     const startTime = new Date();
     const start = now();
@@ -352,7 +412,12 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
       hasError = true;
     }
 
-    if (!(result instanceof Object) || !('then' in result) || typeof result.then !== 'function') {
+    if (
+      result == null ||
+      (typeof result !== 'object' && typeof result !== 'function') ||
+      !('then' in result) ||
+      typeof result.then !== 'function'
+    ) {
       onEnd();
 
       return;
@@ -369,20 +434,15 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
       onEnd();
     }, test.timeout - timePassed);
 
-    const clear = (): void => {
+    clear = (): void => {
       clearTimeout(timeoutId as number);
     };
 
-    result.then(
-      () => {
-        onEnd();
-      },
-      (catchedError: unknown) => {
-        error = catchedError;
-        hasError = true;
-        onEnd();
-      },
-    );
+    result.then(onEnd, (catchedError: unknown) => {
+      error = catchedError;
+      hasError = true;
+      onEnd();
+    });
 
     const task: Task<Test> = {clear, done: false, end, startTime, unit};
 
@@ -402,10 +462,20 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
   testTimeout = 10_000;
 
   protected updateRunResult(
-    options: Options<Test>,
-    unit: TestUnit<Test>,
+    _options: Options<Test>,
+    _unit: TestUnit<Test>,
     result: TestResult,
-  ): void {}
+  ): void {
+    const {runResult} = this;
+
+    if (runResult === undefined) {
+      return;
+    }
+
+    runResult[result.status] += 1;
+    runResult.testsInRun += 1;
+    runResult.duration = Date.now() - Number(runResult.startTime);
+  }
 }
 
 export type * from './types';
