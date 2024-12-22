@@ -2,14 +2,14 @@ import type {
   BaseTest,
   CachedBodiesCreator,
   ClearTimeout,
-  EndTestResult,
+  EndResult,
+  EndedTestStatus,
+  EndedTestResult,
   InterruptedRunStatus,
   Mutable,
   MutableRunResult,
   Options,
   Runner,
-  RunningTestResult,
-  RunningTestStatus,
   RunOptions,
   RunResult,
   SetTimeout,
@@ -18,7 +18,9 @@ import type {
   TestResult,
   TestStartEvent,
   TestUnit,
+  TestUnitOnEnd,
   TestUnits,
+  TestWithCounts,
 } from './types';
 
 export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test> {
@@ -105,11 +107,17 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
 
   concurrency = 1;
 
-  protected endTest(options: Options<Test>, unit: TestUnit<Test>, endResult: EndTestResult): void {
+  protected endTest(options: Options<Test>, unit: TestUnit<Test>, endResult: EndResult): void {
+    if (unit.isEnded) {
+      return;
+    }
+
+    unit.isEnded = true;
+
     const {onTestEnd = this.onTestEnd, onTestStart = this.onTestStart} = options;
     let result: TestResult;
     const {status} = endResult;
-    const {test} = unit;
+    const {repeatsCount, retriesCount, test} = unit;
 
     if (status === 'interrupted') {
       result = {
@@ -119,8 +127,8 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
         startTime: endResult.startTime,
         status,
       };
-    } else if (status === 'skipped' || status === 'todo' || status === 'wasNotRun') {
-      const event: TestStartEvent<Test> = {status, test};
+    } else if (status === 'hasNoBody' || status === 'skipped' || status === 'wasNotRunInTime') {
+      const event: TestStartEvent<Test> = {repeatsCount, retriesCount, status, test};
 
       try {
         onTestStart(event);
@@ -135,7 +143,7 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
 
     this.updateRunResult(options, unit, result);
 
-    const event: TestEndEvent<Test> = {result, test};
+    const event: TestEndEvent<Test> = {repeatsCount, result, retriesCount, test};
 
     try {
       onTestEnd(event);
@@ -143,7 +151,7 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
       this.runResult?.onTestEndErrors.push({error, event});
     }
 
-    unit.onEnd?.(result);
+    unit.onEnd?.(unit, result);
   }
 
   filterTests() {
@@ -154,6 +162,8 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
     return {
       duration: 0,
       failed: 0,
+      filterTestErrors: [],
+      hasNoBody: 0,
       interrupted: 0,
       name: options.name ?? this.name,
       onTestEndErrors: [],
@@ -165,8 +175,7 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
       testsInRun: 0,
       testsInSuite: this.tests.length,
       timedOut: 0,
-      todo: 0,
-      wasNotRun: 0,
+      wasNotRunInTime: 0,
     };
   }
 
@@ -186,7 +195,7 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
         const unit = yield {isAtMaxConcurrency, nextTestEnd};
 
         for (const task of tasks) {
-          if (task.done) {
+          if (task.isEnded) {
             tasks.delete(task);
           }
         }
@@ -221,7 +230,7 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
       tasks.add(task);
 
       const handler = () => {
-        task.done = true;
+        task.isEnded = true;
         resolve();
       };
 
@@ -229,7 +238,7 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
     }
 
     for (const unit of testUnits) {
-      this.endTest(options, unit, {status: 'wasNotRun'});
+      this.endTest(options, unit, {status: 'wasNotRunInTime'});
     }
 
     for (const {clear, startTime, unit} of tasks) {
@@ -238,13 +247,154 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
     }
   }
 
-  protected *getTestUnits(options: Options<Test>): TestUnits<Test> {}
+  protected getTest(options: Options<Test>, partialTest: Partial<Test>): Test {
+    const {
+      repeats: testRepeats = this.repeats,
+      retries: testRetries = this.retries,
+      testTimeout = this.testTimeout,
+    } = options;
+
+    const {
+      body,
+      fail = false,
+      name = 'anonymous',
+      only = false,
+      parameters = [],
+      repeats = testRepeats,
+      retries = testRetries,
+      skip = false,
+      timeout = testTimeout,
+      todo = false,
+      ...rest
+    } = partialTest;
+
+    const test: BaseTest = {
+      body,
+      fail,
+      name,
+      only,
+      parameters,
+      repeats,
+      retries,
+      skip,
+      timeout,
+      todo,
+      ...rest,
+    };
+
+    return test as Test;
+  }
+
+  protected *getTestUnits(options: Options<Test>): TestUnits<Test> {
+    const {filterTests = this.filterTests} = options;
+
+    let tests: Test[] = [];
+    const allTests: readonly Test[] = this.tests.map((partialTest) => {
+      const test = this.getTest(options, partialTest);
+
+      if (test.only) {
+        tests.push(test);
+      }
+
+      return test;
+    });
+
+    const hasOnlyTests = tests.length > 0;
+
+    if (!hasOnlyTests) {
+      tests = allTests.filter((test) => {
+        try {
+          return filterTests.call(this, test);
+        } catch (error) {
+          this.runResult?.filterTestErrors.push({error, test});
+
+          return false;
+        }
+      });
+    }
+
+    const retries: TestWithCounts<Test>[] = [];
+
+    const onEnd: TestUnitOnEnd<Test> = ({repeatsCount, retriesCount, test}, {status}) => {
+      if (status !== 'failed' && status !== 'timedOut') {
+        return;
+      }
+
+      const newRetriesCount = retriesCount + 1;
+
+      if (newRetriesCount <= test.retries) {
+        retries.unshift({repeatsCount, retriesCount: newRetriesCount, test});
+      }
+    };
+
+    let repeatsIndex = 1;
+    let testIndex = 0;
+
+    while (true) {
+      if (retries.length > 0) {
+        const {repeatsCount, retriesCount, test} = retries.pop()!;
+
+        yield {
+          isEnded: false,
+          onEnd,
+          repeatsCount,
+          retriesCount,
+          status: undefined,
+          test,
+        };
+
+        continue;
+      }
+
+      const test = tests[testIndex];
+
+      if (test === undefined) {
+        yield;
+
+        continue;
+      }
+
+      if (!hasOnlyTests && test.skip !== false) {
+        yield {
+          isEnded: false,
+          onEnd: undefined,
+          repeatsCount: 0,
+          retriesCount: 0,
+          status: 'skipped',
+          test,
+        };
+
+        repeatsIndex = 1;
+        testIndex += 1;
+
+        continue;
+      }
+
+      if (repeatsIndex <= test.repeats) {
+        yield {
+          isEnded: false,
+          onEnd: test.retries > 0 ? onEnd : undefined,
+          repeatsCount: repeatsIndex,
+          retriesCount: 0,
+          status: undefined,
+          test,
+        };
+
+        repeatsIndex += 1;
+
+        continue;
+      }
+
+      repeatsIndex = 1;
+      testIndex += 1;
+    }
+  }
 
   maxFailures: number = Infinity;
 
   name = 'anonymous';
 
-  now: () => number = globalThis.performance?.now || Date.now;
+  now: () => number = globalThis.performance?.now.bind(globalThis.performance) || Date.now;
 
   onTestStart(event: TestStartEvent<Test>): void {}
 
@@ -291,7 +441,7 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
     const testUnits = this.getTestUnits(options);
 
     while (runStatus === undefined) {
-      if (this.runResult.failed >= maxFailures) {
+      if (this.runResult.failed + this.runResult.timedOut >= maxFailures) {
         runStatus = runStatus ?? 'interruptedByMaxFailures';
         break;
       }
@@ -303,7 +453,7 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
         break;
       }
 
-      if (isAtMaxConcurrency || unit === undefined) {
+      if ((isAtMaxConcurrency || unit === undefined) && nextTestEnd !== undefined) {
         await nextTestEnd;
       }
     }
@@ -321,7 +471,7 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
 
     for (const unit of testUnits) {
       if (unit !== undefined) {
-        this.endTest(options, unit, {status: 'wasNotRun'});
+        this.endTest(options, unit, {status: 'wasNotRunInTime'});
       }
     }
 
@@ -333,7 +483,7 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
   protected runResult: MutableRunResult<Test> | undefined;
 
   protected runTestUnit(options: Options<Test>, unit: TestUnit<Test>): Task<Test> | undefined {
-    const {test} = unit;
+    const {repeatsCount, retriesCount, test} = unit;
 
     if (unit.status !== undefined) {
       this.endTest(options, unit, {status: unit.status});
@@ -344,7 +494,7 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
     const {body, fail, parameters} = test;
 
     if (typeof body !== 'function') {
-      this.endTest(options, unit, {status: 'todo'});
+      this.endTest(options, unit, {status: 'hasNoBody'});
 
       return;
     }
@@ -372,7 +522,7 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
     let hasError = false;
     let resolve: (() => void) | undefined;
     let result: unknown;
-    let status: RunningTestStatus | undefined;
+    let status: EndedTestStatus | undefined;
 
     const {
       clearTimeout = this.clearTimeout,
@@ -387,14 +537,15 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
       onEnd = () => {};
       status = status ?? (hasError === fail ? 'passed' : 'failed');
       clear?.();
-      resolve?.();
 
-      const testResult: RunningTestResult = {duration, error, hasError, startTime, status};
+      const testResult: EndedTestResult = {duration, error, hasError, startTime, status};
 
       this.endTest(options, unit, testResult);
+
+      resolve?.();
     };
 
-    const event: TestStartEvent<Test> = {status: undefined, test};
+    const event: TestStartEvent<Test> = {repeatsCount, retriesCount, status: undefined, test};
 
     try {
       onTestStart(event);
@@ -444,7 +595,7 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
       onEnd();
     });
 
-    const task: Task<Test> = {clear, done: false, end, startTime, unit};
+    const task: Task<Test> = {clear, end, isEnded: false, startTime, unit};
 
     return task;
   }
@@ -463,18 +614,27 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
 
   protected updateRunResult(
     _options: Options<Test>,
-    _unit: TestUnit<Test>,
+    unit: TestUnit<Test>,
     result: TestResult,
   ): void {
     const {runResult} = this;
+    const {status} = result;
 
     if (runResult === undefined) {
       return;
     }
 
-    runResult[result.status] += 1;
-    runResult.testsInRun += 1;
+    if (
+      (status === 'failed' || status === 'timedOut') &&
+      runResult.runStatus === 'passed' &&
+      unit.test.todo === false
+    ) {
+      runResult.runStatus = 'failed';
+    }
+
     runResult.duration = Date.now() - Number(runResult.startTime);
+    runResult[status] += 1;
+    runResult.testsInRun += 1;
   }
 }
 

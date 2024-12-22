@@ -10,7 +10,7 @@ export interface BaseTest {
    * If greater than 1, then ignore retries.
    */
   readonly repeats: number;
-  readonly retry: number;
+  readonly retries: number;
   readonly skip: boolean | string;
   readonly timeout: number;
   readonly todo: boolean | string;
@@ -23,10 +23,12 @@ export type CachedBodiesCreator = (this: {
 
 export type ClearTimeout = (id: number) => void;
 
-export type EndTestResult =
-  | RunningTestResult
+export type EndResult =
+  | EndedTestResult
   | Readonly<{startTime: Date; status: 'interrupted'}>
-  | WithStatus<NotRunningTestStatus>;
+  | WithStatus<NotStartedTestStatus>;
+
+export type FilterTestError<Test extends BaseTest> = Readonly<{error: unknown; test: Test}>;
 
 export type InterruptedRunStatus =
   | 'interruptedByMaxFailures'
@@ -42,10 +44,14 @@ export type Mutable<Type> = {
 };
 
 export type MutableRunResult<Test extends BaseTest> = Mutable<
-  Omit<RunResult<Test>, 'onTestEndErrors' | 'onTestStartErrors'>
-> & {onTestEndErrors: TestEndError<Test>[]; onTestStartErrors: TestStartError<Test>[]};
+  Omit<RunResult<Test>, 'filterTestErrors' | 'onTestEndErrors' | 'onTestStartErrors'>
+> & {
+  filterTestErrors: FilterTestError<Test>[];
+  onTestEndErrors: TestEndError<Test>[];
+  onTestStartErrors: TestStartError<Test>[];
+};
 
-export type NotRunningTestStatus = 'skipped' | 'todo' | 'wasNotRun';
+export type NotStartedTestStatus = 'hasNoBody' | 'skipped' | 'wasNotRunInTime';
 
 export type Options<Test extends BaseTest> = Partial<RunOptions<Test>>;
 
@@ -77,14 +83,15 @@ export type RunOptions<Test extends BaseTest> = Readonly<{
   testTimeout: number;
 }>;
 
-export type RunningTestResult = TestResult<RunningTestStatus>;
+export type EndedTestResult = TestResult<EndedTestStatus>;
 
-export type RunningTestStatus = 'failed' | 'passed' | 'timedOut';
+export type EndedTestStatus = 'failed' | 'passed' | 'timedOut';
 
 export type RunStatus = InterruptedRunStatus | 'failed' | 'passed';
 
 export type RunResult<Test extends BaseTest> = Readonly<{
   duration: number;
+  filterTestErrors: readonly FilterTestError<Test>[];
   name: string;
   onTestEndErrors: readonly TestEndError<Test>[];
   onTestStartErrors: readonly TestStartError<Test>[];
@@ -97,12 +104,12 @@ export type RunResult<Test extends BaseTest> = Readonly<{
 
 export type SetTimeout = (handler: () => void, timeout: number) => unknown;
 
-export type Status = NotRunningTestStatus | 'interrupted' | RunningTestStatus;
+export type Status = NotStartedTestStatus | 'interrupted' | EndedTestStatus;
 
 export type Task<Test extends BaseTest> = {
-  readonly clear: () => void;
-  done: boolean;
+  readonly clear: (this: void) => void;
   readonly end: Promise<void>;
+  isEnded: boolean;
   readonly startTime: Date;
   readonly unit: TestUnit<Test>;
 };
@@ -112,7 +119,8 @@ export type TestEndError<Test extends BaseTest> = Readonly<{
   event: TestEndEvent<Test>;
 }>;
 
-export type TestEndEvent<Test extends BaseTest> = Readonly<{result: TestResult; test: Test}>;
+export type TestEndEvent<Test extends BaseTest> = TestWithCounts<Test> &
+  Readonly<{result: TestResult}>;
 
 export type TestResult<SomeStatus extends Status = Status> = Readonly<{
   duration: number;
@@ -127,22 +135,31 @@ export type TestStartError<Test extends BaseTest> = Readonly<{
   event: TestStartEvent<Test>;
 }>;
 
-export type TestStartEvent<Test extends BaseTest> = Readonly<{
-  status: NotRunningTestStatus | undefined;
-  test: Test;
-}>;
+export type TestStartEvent<Test extends BaseTest> = TestWithCounts<Test> &
+  Readonly<{status: NotStartedTestStatus | undefined}>;
 
-export type TestUnit<Test extends BaseTest> = Readonly<{
-  onEnd: ((result: TestResult) => void) | undefined;
-  status: Exclude<NotRunningTestStatus, 'wasNotRun'> | undefined;
-  test: Test;
-}>;
+export type TestUnit<Test extends BaseTest> = TestWithCounts<Test> & {
+  isEnded: boolean;
+  readonly onEnd: TestUnitOnEnd<Test> | undefined;
+  readonly status: 'skipped' | undefined;
+};
+
+export type TestUnitOnEnd<Test extends BaseTest> = (
+  unit: TestUnit<Test>,
+  result: TestResult,
+) => void;
 
 export type TestUnits<Test extends BaseTest> = Generator<
   TestUnit<Test> | undefined,
   undefined,
   undefined
 >;
+
+export type TestWithCounts<Test extends BaseTest> = Readonly<{
+  repeatsCount: number;
+  retriesCount: number;
+  test: Test;
+}>;
 
 type WithStatus<SomeStatus extends Status> = SomeStatus extends Status
   ? Readonly<{status: SomeStatus}>
