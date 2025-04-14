@@ -23,6 +23,9 @@ import type {
   TestWithCounts,
 } from './types';
 
+/**
+ * Class `Suite` for creation a suite of tests.
+ */
 export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test> {
   constructor(name: string, options?: Options<Test>);
   constructor(options?: Options<Test>);
@@ -131,7 +134,7 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
       const event: TestStartEvent<Test> = {repeatsCount, retriesCount, status, test};
 
       try {
-        onTestStart(event);
+        onTestStart.call(this, options, event);
       } catch (error) {
         this.runResult?.onTestStartErrors.push({error, event});
       }
@@ -143,10 +146,12 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
 
     this.updateRunResult(options, unit, result);
 
-    const event: TestEndEvent<Test> = {repeatsCount, result, retriesCount, test};
+    const tapOutput = this.getTestTapOutput(options, unit, result);
+
+    const event: TestEndEvent<Test> = {repeatsCount, result, retriesCount, tapOutput, test};
 
     try {
-      onTestEnd(event);
+      onTestEnd.call(this, options, event);
     } catch (error) {
       this.runResult?.onTestEndErrors.push({error, event});
     }
@@ -166,12 +171,15 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
       hasNoBody: 0,
       interrupted: 0,
       name: options.name ?? this.name,
+      onSuiteEndErrors: [],
+      onSuiteStartErrors: [],
       onTestEndErrors: [],
       onTestStartErrors: [],
       passed: 0,
       runStatus: 'passed',
       skipped: 0,
       startTime: new Date(),
+      tapOutput: 'Bail out! The suite run did not work to the end.\n1..0\n',
       testsInRun: 0,
       testsInSuite: this.tests.length,
       timedOut: 0,
@@ -247,6 +255,8 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
     }
   }
 
+  protected getRunResultTapOutput(options: Options<Test>, runResult: RunResult<Test>): string {}
+
   protected getTest(options: Options<Test>, partialTest: Partial<Test>): Test {
     const {
       repeats: testRepeats = this.repeats,
@@ -285,6 +295,12 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
     return test as Test;
   }
 
+  protected getTestTapOutput(
+    options: Options<Test>,
+    unit: TestUnit<Test>,
+    result: TestResult,
+  ): string {}
+
   protected *getTestUnits(options: Options<Test>): TestUnits<Test> {
     const {filterTests = this.filterTests} = options;
 
@@ -304,7 +320,7 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
     if (!hasOnlyTests) {
       tests = allTests.filter((test) => {
         try {
-          return filterTests.call(this, test);
+          return filterTests.call(this, options, test);
         } catch (error) {
           this.runResult?.filterTestErrors.push({error, test});
 
@@ -394,11 +410,30 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
 
   name = 'anonymous';
 
-  now: () => number = globalThis.performance?.now.bind(globalThis.performance) || Date.now;
+  now: (this: void) => number =
+    globalThis.performance?.now.bind(globalThis.performance) || Date.now;
 
-  onTestStart(event: TestStartEvent<Test>): void {}
+  onSuiteStart(options: Options<Test>): Promise<void> | void {
+    const {print = this.print} = options;
 
-  onTestEnd(event: TestEndEvent<Test>): void {}
+    print('TAP version 14\n');
+  }
+
+  onSuiteEnd(options: Options<Test>, runResult: RunResult<Test>): Promise<void> | void {
+    const {print = this.print} = options;
+
+    print(runResult.tapOutput);
+  }
+
+  onTestStart(_options: Options<Test>, _event: TestStartEvent<Test>): void {}
+
+  onTestEnd(options: Options<Test>, event: TestEndEvent<Test>): void {
+    const {print = this.print} = options;
+
+    print(event.tapOutput);
+  }
+
+  print: (this: void, message: string) => void = globalThis.console?.log ?? (() => {});
 
   repeats = 1;
 
@@ -414,6 +449,8 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
     const {
       clearTimeout = this.clearTimeout,
       maxFailures = this.maxFailures,
+      onSuiteEnd = this.onSuiteEnd,
+      onSuiteStart = this.onSuiteStart,
       runTimeout = this.runTimeout,
       setTimeout = this.setTimeout,
       signal = this.signal,
@@ -436,6 +473,12 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
     }
 
     this.runResult = this.getInitialRunResult(options);
+
+    try {
+      await onSuiteStart.call(this, options);
+    } catch (error) {
+      this.runResult.onSuiteStartErrors.push(error);
+    }
 
     const runner = this.getRunner(options);
     const testUnits = this.getTestUnits(options);
@@ -473,6 +516,15 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
       if (unit !== undefined) {
         this.endTest(options, unit, {status: 'wasNotRunInTime'});
       }
+    }
+
+    this.runResult.tapOutput = this.getRunResultTapOutput(options, this.runResult);
+    this.runResult.duration = now() - start;
+
+    try {
+      await onSuiteEnd.call(this, options, this.runResult);
+    } catch (error) {
+      this.runResult.onSuiteEndErrors.push(error);
     }
 
     this.runResult.duration = now() - start;
@@ -548,7 +600,7 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
     const event: TestStartEvent<Test> = {repeatsCount, retriesCount, status: undefined, test};
 
     try {
-      onTestStart(event);
+      onTestStart.call(this, options, event);
     } catch (error) {
       this.runResult?.onTestStartErrors.push({error, event});
     }

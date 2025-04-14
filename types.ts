@@ -6,9 +6,6 @@ export interface BaseTest {
   readonly name: string;
   readonly only: boolean;
   readonly parameters: readonly unknown[];
-  /**
-   * If greater than 1, then ignore retries.
-   */
   readonly repeats: number;
   readonly retries: number;
   readonly skip: boolean | string;
@@ -21,7 +18,7 @@ export type CachedBodiesCreator = (this: {
   source: string;
 }) => unknown;
 
-export type ClearTimeout = (id: number) => void;
+export type ClearTimeout = (this: void, id: number) => void;
 
 export type EndResult =
   | EndedTestResult
@@ -44,9 +41,18 @@ export type Mutable<Type> = {
 };
 
 export type MutableRunResult<Test extends BaseTest> = Mutable<
-  Omit<RunResult<Test>, 'filterTestErrors' | 'onTestEndErrors' | 'onTestStartErrors'>
+  Omit<
+    RunResult<Test>,
+    | 'filterTestErrors'
+    | 'onSuiteEndErrors'
+    | 'onSuiteStartErrors'
+    | 'onTestEndErrors'
+    | 'onTestStartErrors'
+  >
 > & {
   filterTestErrors: FilterTestError<Test>[];
+  onSuiteEndErrors: unknown[];
+  onSuiteStartErrors: unknown[];
   onTestEndErrors: TestEndError<Test>[];
   onTestStartErrors: TestStartError<Test>[];
 };
@@ -69,12 +75,19 @@ export type RunnerState = Readonly<
 export type RunOptions<Test extends BaseTest> = Readonly<{
   clearTimeout: ClearTimeout;
   concurrency: number;
-  filterTests: (this: Suite<Test>, test: Test) => boolean;
+  filterTests: (this: Suite<Test>, options: Options<Test>, test: Test) => boolean;
   maxFailures: number;
   name: string;
   now: (this: void) => number;
-  onTestStart: (this: void, event: TestStartEvent<Test>) => void;
-  onTestEnd: (this: void, event: TestEndEvent<Test>) => void;
+  onSuiteEnd: (
+    this: Suite<Test>,
+    options: Options<Test>,
+    runResult: RunResult<Test>,
+  ) => Promise<void> | void;
+  onSuiteStart: (this: Suite<Test>, options: Options<Test>) => Promise<void> | void;
+  onTestEnd: (this: Suite<Test>, options: Options<Test>, event: TestEndEvent<Test>) => void;
+  onTestStart: (this: Suite<Test>, options: Options<Test>, event: TestStartEvent<Test>) => void;
+  print: (this: void, message: string) => void;
   repeats: number;
   retries: number;
   runTimeout: number;
@@ -93,16 +106,19 @@ export type RunResult<Test extends BaseTest> = Readonly<{
   duration: number;
   filterTestErrors: readonly FilterTestError<Test>[];
   name: string;
+  onSuiteEndErrors: readonly unknown[];
+  onSuiteStartErrors: readonly unknown[];
   onTestEndErrors: readonly TestEndError<Test>[];
   onTestStartErrors: readonly TestStartError<Test>[];
   runStatus: RunStatus;
   startTime: Date;
+  tapOutput: string;
   testsInRun: number;
   testsInSuite: number;
 }> &
   Readonly<Record<Status, number>>;
 
-export type SetTimeout = (handler: () => void, timeout: number) => unknown;
+export type SetTimeout = (this: void, handler: () => void, timeout: number) => unknown;
 
 export type Status = NotStartedTestStatus | 'interrupted' | EndedTestStatus;
 
@@ -120,7 +136,7 @@ export type TestEndError<Test extends BaseTest> = Readonly<{
 }>;
 
 export type TestEndEvent<Test extends BaseTest> = TestWithCounts<Test> &
-  Readonly<{result: TestResult}>;
+  Readonly<{result: TestResult; tapOutput: string}>;
 
 export type TestResult<SomeStatus extends Status = Status> = Readonly<{
   duration: number;

@@ -5,8 +5,8 @@
   "author": "uid11",
   "bugs": "https://github.com/uid11/clean-tests/issues",
   "devDependencies": {
-    "prettier": ">=3.4",
-    "typescript": ">=5.7"
+    "prettier": ">=3.5",
+    "typescript": ">=5.8"
   },
   "exports": {
     ".": {
@@ -43,5 +43,5 @@
   },
   "sideEffects": false,
   "type": "module",
-  "types": "index.d.ts"
+  "types": "./index.d.ts"
 }
