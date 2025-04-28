@@ -1,17 +1,21 @@
 import type {Suite} from './index';
 
-export interface BaseTest {
-  readonly body: ((this: void, ...args: this['parameters']) => unknown) | undefined;
-  readonly fail: boolean;
-  readonly name: string;
-  readonly only: boolean;
-  readonly parameters: readonly unknown[];
-  readonly repeats: number;
-  readonly retries: number;
-  readonly skip: boolean | string;
-  readonly timeout: number;
-  readonly todo: boolean | string;
-}
+export type BaseTest<Parameters extends readonly unknown[] = readonly unknown[]> = Readonly<{
+  body: Body<Parameters>;
+  fail: boolean;
+  name: string;
+  only: boolean;
+  parameters: Parameters;
+  repeats: number;
+  retries: number;
+  skip: boolean | string;
+  timeout: number;
+  todo: boolean | string;
+}>;
+
+export type Body<Parameters extends readonly unknown[]> =
+  | ((this: void, ...args: Parameters) => unknown)
+  | undefined;
 
 export type CachedBodiesCreator = (this: {
   scope: Record<string, Function>;
@@ -19,6 +23,10 @@ export type CachedBodiesCreator = (this: {
 }) => unknown;
 
 export type ClearTimeout = (this: void, id: number) => void;
+
+export type EndedTestResult = TestResult<EndedTestStatus>;
+
+export type EndedTestStatus = 'failed' | 'passed' | 'timedOut';
 
 export type EndResult =
   | EndedTestResult
@@ -67,10 +75,10 @@ export type Runner<Test extends BaseTest> = Generator<
   'interrupted' | TestUnit<Test> | undefined
 >;
 
-export type RunnerState = Readonly<
-  | {isAtMaxConcurrency: true; nextTestEnd: Promise<void>}
-  | {isAtMaxConcurrency: false; nextTestEnd: Promise<void> | undefined}
->;
+export type RunnerState = Readonly<{
+  isAtMaxConcurrency: boolean;
+  nextTestEnd: Promise<void> | undefined;
+}>;
 
 export type RunOptions<Test extends BaseTest> = Readonly<{
   clearTimeout: ClearTimeout;
@@ -95,10 +103,6 @@ export type RunOptions<Test extends BaseTest> = Readonly<{
   signal: AbortSignal | undefined;
   testTimeout: number;
 }>;
-
-export type EndedTestResult = TestResult<EndedTestStatus>;
-
-export type EndedTestStatus = 'failed' | 'passed' | 'timedOut';
 
 export type RunStatus = InterruptedRunStatus | 'failed' | 'passed';
 
@@ -135,7 +139,7 @@ export type TestEndError<Test extends BaseTest> = Readonly<{
   event: TestEndEvent<Test>;
 }>;
 
-export type TestEndEvent<Test extends BaseTest> = TestWithCounts<Test> &
+export type TestEndEvent<Test extends BaseTest> = TestWithCounters<Test> &
   Readonly<{result: TestResult; tapOutput: string}>;
 
 export type TestResult<SomeStatus extends Status = Status> = Readonly<{
@@ -151,10 +155,10 @@ export type TestStartError<Test extends BaseTest> = Readonly<{
   event: TestStartEvent<Test>;
 }>;
 
-export type TestStartEvent<Test extends BaseTest> = TestWithCounts<Test> &
+export type TestStartEvent<Test extends BaseTest> = TestWithCounters<Test> &
   Readonly<{status: NotStartedTestStatus | undefined}>;
 
-export type TestUnit<Test extends BaseTest> = TestWithCounts<Test> & {
+export type TestUnit<Test extends BaseTest> = TestWithCounters<Test> & {
   isEnded: boolean;
   readonly onEnd: TestUnitOnEnd<Test> | undefined;
   readonly status: 'skipped' | undefined;
@@ -168,14 +172,20 @@ export type TestUnitOnEnd<Test extends BaseTest> = (
 export type TestUnits<Test extends BaseTest> = Generator<
   TestUnit<Test> | undefined,
   undefined,
-  undefined
+  'isRunning' | undefined
 >;
 
-export type TestWithCounts<Test extends BaseTest> = Readonly<{
+export type TestWithCounters<Test extends BaseTest> = Readonly<{
   repeatsCount: number;
   retriesCount: number;
   test: Test;
 }>;
+
+export type TestWithParameters<Test extends BaseTest, Parameters extends readonly unknown[]> = Pick<
+  Partial<BaseTest<Parameters>>,
+  'body' | 'parameters'
+> &
+  Pick<Partial<Test>, Exclude<keyof BaseTest, 'body' | 'parameters'>>;
 
 type WithStatus<SomeStatus extends Status> = SomeStatus extends Status
   ? Readonly<{status: SomeStatus}>

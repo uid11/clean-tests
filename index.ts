@@ -1,5 +1,6 @@
 import type {
   BaseTest,
+  Body,
   CachedBodiesCreator,
   ClearTimeout,
   EndResult,
@@ -13,6 +14,7 @@ import type {
   RunOptions,
   RunResult,
   SetTimeout,
+  Status,
   Task,
   TestEndEvent,
   TestResult,
@@ -20,7 +22,8 @@ import type {
   TestUnit,
   TestUnitOnEnd,
   TestUnits,
-  TestWithCounts,
+  TestWithCounters,
+  TestWithParameters,
 } from './types';
 
 /**
@@ -57,16 +60,23 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
     this.cachedBodiesCreator = undefined;
   }
 
-  addTest(name: string, options?: Partial<Test>, body?: Test['body']): void;
-  addTest(name: string, body: Test['body']): void;
-  addTest(options: Partial<Test>, body?: Test['body']): void;
-  addTest(body: Test['body']): void;
-  addTest(
-    nameOrBodyOrOptions?: string | Test['body'] | Partial<Test>,
-    optionsOrBody?: Partial<Test> | Test['body'],
-    body?: Test['body'],
+  addTest<const Parameters extends readonly unknown[]>(
+    name: string,
+    options?: TestWithParameters<Test, Parameters>,
+    body?: Body<Parameters>,
+  ): void;
+  addTest<const Parameters extends readonly unknown[]>(name: string, body: Body<Parameters>): void;
+  addTest<const Parameters extends readonly unknown[]>(
+    options: TestWithParameters<Test, Parameters>,
+    body?: Body<Parameters>,
+  ): void;
+  addTest<const Parameters extends readonly unknown[]>(body: Body<Parameters>): void;
+  addTest<const Parameters extends readonly unknown[]>(
+    nameOrBodyOrOptions?: string | Body<Parameters> | TestWithParameters<Test, Parameters>,
+    optionsOrBody?: TestWithParameters<Test, Parameters> | Body<Parameters>,
+    body?: Body<Parameters>,
   ): void {
-    const test = {} as Mutable<Partial<Test>>;
+    const test: Mutable<TestWithParameters<Test, Parameters>> = {};
 
     if (typeof nameOrBodyOrOptions === 'string') {
       test.name = nameOrBodyOrOptions;
@@ -87,7 +97,7 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
       Object.assign(test, nameOrBodyOrOptions);
     }
 
-    this.tests.push(test);
+    this.tests.push(test as Partial<Test>);
   }
 
   protected assertFunctionName(name: string): void {
@@ -159,31 +169,29 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
     unit.onEnd?.(unit, result);
   }
 
+  protected escapeTapOutput(message: string): string {
+    return message.replace(/\s/g, ' ').replace(/\\/g, '\\\\').replace(/#/g, '\\#');
+  }
+
   filterTests() {
     return true;
   }
 
   protected getInitialRunResult(options: Options<Test>): MutableRunResult<Test> {
     return {
+      ...this.statusCounters,
       duration: 0,
-      failed: 0,
       filterTestErrors: [],
-      hasNoBody: 0,
-      interrupted: 0,
       name: options.name ?? this.name,
       onSuiteEndErrors: [],
       onSuiteStartErrors: [],
       onTestEndErrors: [],
       onTestStartErrors: [],
-      passed: 0,
       runStatus: 'passed',
-      skipped: 0,
       startTime: new Date(),
       tapOutput: 'Bail out! The suite run did not work to the end.\n1..0\n',
       testsInRun: 0,
       testsInSuite: this.tests.length,
-      timedOut: 0,
-      wasNotRunInTime: 0,
     };
   }
 
@@ -197,9 +205,13 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
       let isAtMaxConcurrency = !(tasks.size < concurrency);
 
       if (isAtMaxConcurrency || testUnits.length === 0) {
-        const nextTestEnd = new Promise<void>((res) => {
-          resolve = res;
-        });
+        const nextTestEnd =
+          tasks.size === 0
+            ? undefined
+            : new Promise<void>((res) => {
+                resolve = res;
+              });
+
         const unit = yield {isAtMaxConcurrency, nextTestEnd};
 
         for (const task of tasks) {
@@ -245,17 +257,30 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
       task.end.then(handler, handler);
     }
 
-    for (const unit of testUnits) {
-      this.endTest(options, unit, {status: 'wasNotRunInTime'});
-    }
-
     for (const {clear, startTime, unit} of tasks) {
       clear();
       this.endTest(options, unit, {startTime, status: 'interrupted'});
     }
+
+    for (const unit of testUnits) {
+      this.endTest(options, unit, {status: 'wasNotRunInTime'});
+    }
   }
 
-  protected getRunResultTapOutput(options: Options<Test>, runResult: RunResult<Test>): string {}
+  protected getRunResultTapOutput(_options: Options<Test>, runResult: RunResult<Test>): string {
+    const {runStatus} = runResult;
+    const bailOut =
+      runStatus === 'failed' || runStatus === 'passed'
+        ? ''
+        : `Bail out! The suite run was interrupted by ${runStatus.slice('interruptedBy'.length)}.\n`;
+    const counters = (Object.keys(this.statusCounters) as Status[])
+      .map((status) => (runResult[status] > 0 ? `${status}: ${runResult[status]}` : undefined))
+      .filter((counter) => counter !== undefined)
+      .join(', ');
+    const plan = `1..${runResult.testsInRun} # ${counters === '' ? 'No tests were run.' : counters}\n`;
+
+    return bailOut + plan;
+  }
 
   protected getTest(options: Options<Test>, partialTest: Partial<Test>): Test {
     const {
@@ -296,10 +321,52 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
   }
 
   protected getTestTapOutput(
-    options: Options<Test>,
+    _options: Options<Test>,
     unit: TestUnit<Test>,
     result: TestResult,
-  ): string {}
+  ): string {
+    const {status} = result;
+
+    if (status === 'interrupted' || status === 'wasNotRunInTime') {
+      return '';
+    }
+
+    const {escapeTapOutput} = this;
+    const {test} = unit;
+    const description = escapeTapOutput(test.name);
+    let directive = '';
+    const isOk = status !== 'failed' && status !== 'timedOut';
+    const testNumber = this.runResult?.testsInRun ?? 0;
+
+    if (test.skip) {
+      directive = ' # skip';
+
+      if (typeof test.skip === 'string') {
+        directive += ' ' + escapeTapOutput(test.skip);
+      }
+    } else if (test.todo) {
+      directive = ' # todo';
+
+      if (typeof test.todo === 'string') {
+        directive += ' ' + escapeTapOutput(test.todo);
+      }
+    }
+
+    const testPoint = `${isOk ? '' : 'not '}ok ${testNumber} - ${description}${directive}\n`;
+
+    if (isOk) {
+      return testPoint;
+    }
+
+    const errorMessage = result.hasError
+      ? String(result.error)
+      : status === 'timedOut'
+        ? `${test.timeout}ms timeout expired`
+        : '';
+    const error = '    ' + errorMessage.split('\n').join('\n    ');
+
+    return `${testPoint}  ---\n  duration: ${result.duration}\n  error: |\n${error}\n  ...\n`;
+  }
 
   protected *getTestUnits(options: Options<Test>): TestUnits<Test> {
     const {filterTests = this.filterTests} = options;
@@ -329,7 +396,7 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
       });
     }
 
-    const retries: TestWithCounts<Test>[] = [];
+    const retries: TestWithCounters<Test>[] = [];
 
     const onEnd: TestUnitOnEnd<Test> = ({repeatsCount, retriesCount, test}, {status}) => {
       if (status !== 'failed' && status !== 'timedOut') {
@@ -365,9 +432,13 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
       const test = tests[testIndex];
 
       if (test === undefined) {
-        yield;
+        const state = yield;
 
-        continue;
+        if (state === 'isRunning') {
+          continue;
+        }
+
+        return;
       }
 
       if (!hasOnlyTests && test.skip !== false) {
@@ -483,13 +554,15 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
     const runner = this.getRunner(options);
     const testUnits = this.getTestUnits(options);
 
+    runner.next();
+
     while (runStatus === undefined) {
       if (this.runResult.failed + this.runResult.timedOut >= maxFailures) {
         runStatus = runStatus ?? 'interruptedByMaxFailures';
         break;
       }
 
-      const unit = testUnits.next().value;
+      const unit = testUnits.next('isRunning').value;
       const {isAtMaxConcurrency = false, nextTestEnd} = runner.next(unit).value ?? {};
 
       if (nextTestEnd === undefined && unit === undefined) {
@@ -657,6 +730,16 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
   setTimeout: SetTimeout = globalThis.setTimeout;
 
   signal: AbortSignal | undefined;
+
+  protected statusCounters: Readonly<Record<Status, 0>> = {
+    failed: 0,
+    hasNoBody: 0,
+    interrupted: 0,
+    passed: 0,
+    skipped: 0,
+    timedOut: 0,
+    wasNotRunInTime: 0,
+  };
 
   runTimeout = 300_000;
 

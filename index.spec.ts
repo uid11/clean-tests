@@ -1,53 +1,75 @@
 import {Suite} from './index.js';
 
-const suite = new Suite('Basic tests of ...');
+/**
+ * Asserts that the value is `true` (strictly equal to `true`).
+ */
+function assertValueIsTrue<Type>(value: Type | true, check: string): asserts value is true {
+  if (value !== true) {
+    throw new Error(`Asserted value is not true: ${check}`);
+  }
+}
 
-const getTestData = () => {
-  // some actions
+const suiteWithOnlyName = 'Suite with only test';
+const suiteWithOnly = new Suite(suiteWithOnlyName);
+
+const getTestData = (): {foo: string} => {
+  return {foo: ''};
 };
 
-suite.addFunctionToScope(getTestData);
+suiteWithOnly.addFunctionToScope(getTestData);
 
-suite.addTest('some test', () => {
+suiteWithOnly.addTest('some test', () => {
   // some asserts
 });
 
-suite.addTest('other test', {skip: 'reason ...'}, async () => {
+suiteWithOnly.addTest('other test', {skip: 'reason ...'}, async () => {
   // ...
 });
 
-suite.addTest('third test', {only: true}, () => {
+suiteWithOnly.addTest('third test', {only: true}, () => {
   const testData = getTestData();
-  // ...
+
+  assertValueIsTrue(testData.foo === '', 'testData is correct');
 });
 
-suite.addTest('test with timeout', {timeout: 500}, () => {});
+suiteWithOnly.addFunctionToScope(assertValueIsTrue);
 
-suite.addTest('test with parameters', {parameters: ['foo']}, (parameter) => {
-  assertValueIsTrue(parameters === 'foo');
-});
+suiteWithOnly.addTest('test with timeout', {timeout: 500}, () => {});
 
-const print = ({message}: {message: string}) => console.log(message);
+suiteWithOnly.addTest(
+  'test with parameters',
+  {parameters: ['foo', 34]},
+  (text, counter: number) => {
+    assertValueIsTrue(text === 'foo', 'string parameter is correct');
+    // @ts-expect-error
+    assertValueIsTrue(text === 'bar', 'second string parameter is correct');
+    assertValueIsTrue(counter === 35, 'number parameter is correct');
+  },
+);
 
-// in main tests file
-const events = await pack.run({
-  completeOnFirstFailure: false,
-  onPackRun: print,
-  onTestRun: print,
-  onTestCompleted: print,
-  onPackCompleted: print,
-});
+const onlyResult = await suiteWithOnly.run({testTimeout: 3_000});
 
-/*
+assertValueIsTrue(onlyResult.failed === 0, 'failed counter is correct');
+assertValueIsTrue(onlyResult.hasNoBody === 0, 'hasNoBody counter is correct');
+assertValueIsTrue(onlyResult.interrupted === 0, 'interrupted counter is correct');
+assertValueIsTrue(onlyResult.passed === 1, 'passed counter is correct');
+assertValueIsTrue(onlyResult.skipped === 0, 'skipped counter is correct');
+assertValueIsTrue(onlyResult.timedOut === 0, 'timedOut counter is correct');
+assertValueIsTrue(onlyResult.wasNotRunInTime === 0, 'wasNotRunInTime counter is correct');
 
-  Output:
+assertValueIsTrue(onlyResult.filterTestErrors.length === 0, 'no filterTestErrors');
+assertValueIsTrue(onlyResult.onSuiteEndErrors.length === 0, 'no onSuiteEndErrors');
+assertValueIsTrue(onlyResult.onSuiteStartErrors.length === 0, 'no onSuiteStartErrors');
+assertValueIsTrue(onlyResult.onTestEndErrors.length === 0, 'no onTestEndErrors');
+assertValueIsTrue(onlyResult.onTestStartErrors.length === 0, 'no onTestStartErrors');
 
-The pack of tests named "Basic tests of ..." has been run.
-✅️ some test
-✅️ third test (3ms)
-❌ failed test
- ...error details...
-✅️ other test (4ms)
-The pack of tests named "Basic tests of ..." has been completed in 10ms.
-1 failed, 3 passed.
-*/
+assertValueIsTrue(onlyResult.duration > 0 && onlyResult.duration < 20, 'duration is correct');
+assertValueIsTrue(onlyResult.name === suiteWithOnlyName, 'suite name is correct');
+assertValueIsTrue(onlyResult.runStatus === 'passed', 'run status is correct');
+assertValueIsTrue(
+  onlyResult.startTime.valueOf() > Date.now() - onlyResult.duration - 5 &&
+    onlyResult.startTime.valueOf() + onlyResult.duration < Date.now() + 1,
+  'startTime is correct',
+);
+assertValueIsTrue(onlyResult.testsInRun === 1, 'testsInRun counter is correct');
+assertValueIsTrue(onlyResult.testsInSuite === 5, 'testsInSuite counter is correct');
