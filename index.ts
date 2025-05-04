@@ -33,7 +33,7 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
   constructor(name: string, options?: Options<Test>);
   constructor(options?: Options<Test>);
   constructor(nameOrOptions?: string | Options<Test>, options?: Options<Test>) {
-    this.scope = {__proto__: null as any};
+    this.scope = Object.create(null);
     this.tests = [];
 
     if (typeof nameOrOptions === 'string') {
@@ -50,14 +50,20 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
       name = fn.name;
     }
 
-    this.assertFunctionName(name);
-
     if (name in this.scope) {
-      throw new Error(`Function "${name}" already exists in the scope: ${this.scope[name]}`);
+      if (this.scope[name] === fn) {
+        return;
+      }
+
+      throw new Error(
+        `Another function "${name}" already exists in the scope: ${this.scope[name]}`,
+      );
     }
 
-    this.scope[name] = fn;
+    this.assertFunctionName(name);
+
     this.cachedBodiesCreator = undefined;
+    this.scope[name] = fn;
   }
 
   addTest<const Parameters extends readonly unknown[]>(
@@ -76,7 +82,7 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
     optionsOrBody?: TestWithParameters<Test, Parameters> | Body<Parameters>,
     body?: Body<Parameters>,
   ): void {
-    const test: Mutable<TestWithParameters<Test, Parameters>> = {};
+    const test: Mutable<TestWithParameters<BaseTest, Parameters>> = {};
 
     if (typeof nameOrBodyOrOptions === 'string') {
       test.name = nameOrBodyOrOptions;
@@ -97,7 +103,7 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
       Object.assign(test, nameOrBodyOrOptions);
     }
 
-    this.tests.push(test as Partial<Test>);
+    this.tests.push(test as Partial<BaseTest> as Partial<Test>);
   }
 
   protected assertFunctionName(name: string): void {
@@ -484,21 +490,25 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
   now: (this: void) => number =
     globalThis.performance?.now.bind(globalThis.performance) || Date.now;
 
-  onSuiteStart(options: Options<Test>): Promise<void> | void {
+  onSuiteStart(this: Suite<Test>, options: Options<Test>): Promise<void> | void {
     const {print = this.print} = options;
 
     print('TAP version 14\n');
   }
 
-  onSuiteEnd(options: Options<Test>, runResult: RunResult<Test>): Promise<void> | void {
+  onSuiteEnd(
+    this: Suite<Test>,
+    options: Options<Test>,
+    runResult: RunResult<Test>,
+  ): Promise<void> | void {
     const {print = this.print} = options;
 
     print(runResult.tapOutput);
   }
 
-  onTestStart(_options: Options<Test>, _event: TestStartEvent<Test>): void {}
+  onTestStart(this: Suite<Test>, _options: Options<Test>, _event: TestStartEvent<Test>): void {}
 
-  onTestEnd(options: Options<Test>, event: TestEndEvent<Test>): void {
+  onTestEnd(this: Suite<Test>, options: Options<Test>, event: TestEndEvent<Test>): void {
     const {print = this.print} = options;
 
     print(event.tapOutput);
@@ -527,8 +537,14 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
       signal = this.signal,
     } = options;
 
+    let interruptionPromiseResolve: (() => void) | undefined;
+    const interruptionPromise = new Promise<void>((resolve) => {
+      interruptionPromiseResolve = resolve;
+    });
+
     const timeoutId = setTimeout(() => {
       runStatus = runStatus ?? 'interruptedByTimeout';
+      interruptionPromiseResolve?.();
     }, runTimeout);
 
     if (signal !== undefined) {
@@ -537,6 +553,7 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
       } else {
         signalHandler = () => {
           runStatus = runStatus ?? 'interruptedBySignal';
+          interruptionPromiseResolve?.();
         };
 
         signal.addEventListener('abort', signalHandler);
@@ -570,7 +587,7 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
       }
 
       if ((isAtMaxConcurrency || unit === undefined) && nextTestEnd !== undefined) {
-        await nextTestEnd;
+        await Promise.race<void>([interruptionPromise, nextTestEnd]);
       }
     }
 
@@ -624,6 +641,15 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
       return;
     }
 
+    const {onTestStart = this.onTestStart} = options;
+    const event: TestStartEvent<Test> = {repeatsCount, retriesCount, status: undefined, test};
+
+    try {
+      onTestStart.call(this, options, event);
+    } catch (error) {
+      this.runResult?.onTestStartErrors.push({error, event});
+    }
+
     if (this.cachedBodiesCreator === undefined) {
       const names = Object.keys(this.scope).join(',');
 
@@ -652,7 +678,6 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
     const {
       clearTimeout = this.clearTimeout,
       now = this.now,
-      onTestStart = this.onTestStart,
       setTimeout = this.setTimeout,
     } = options;
 
@@ -669,14 +694,6 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
 
       resolve?.();
     };
-
-    const event: TestStartEvent<Test> = {repeatsCount, retriesCount, status: undefined, test};
-
-    try {
-      onTestStart.call(this, options, event);
-    } catch (error) {
-      this.runResult?.onTestStartErrors.push({error, event});
-    }
 
     const startTime = new Date();
     const start = now();

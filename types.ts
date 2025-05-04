@@ -185,7 +185,7 @@ export type TestWithParameters<Test extends BaseTest, Parameters extends readonl
   Partial<BaseTest<Parameters>>,
   'body' | 'parameters'
 > &
-  Pick<Partial<Test>, Exclude<keyof BaseTest, 'body' | 'parameters'>>;
+  Omit<Partial<Test>, 'body' | 'parameters'>;
 
 type WithStatus<SomeStatus extends Status> = SomeStatus extends Status
   ? Readonly<{status: SomeStatus}>

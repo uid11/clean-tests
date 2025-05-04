@@ -11,7 +11,7 @@ Clean tests with isolated scope ✅️️.
 
 ## Install
 
-Requires `ECMAScript 2020` (modern browser or [node](https://nodejs.org/en/) version 16 or higher):
+Requires `ECMAScript 2022` (modern browser or [node](https://nodejs.org/en/) version 16 or higher):
 
 ```sh
 npm install --save-dev clean-tests
