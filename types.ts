@@ -1,5 +1,17 @@
 import type {Suite} from './index';
 
+export type AssertValueIsTrue = (<Type>(
+  value: Type | true,
+  payload?: Payload,
+) => asserts value is true) &
+  (<Type>(value: Type | true, message: string, payload?: Payload) => asserts value is true) & {
+    assertCount: number;
+    onFailure?:
+      | ((value: unknown, message: string | undefined, payload?: Payload) => void)
+      | undefined;
+    onPass?: ((value: unknown, message: string | undefined, payload?: Payload) => void) | undefined;
+  };
+
 export type BaseTest<Parameters extends readonly unknown[] = readonly unknown[]> = Readonly<{
   body: Body<Parameters>;
   fail: boolean;
@@ -51,14 +63,14 @@ export type Mutable<Type> = {
 export type MutableRunResult<Test extends BaseTest> = Mutable<
   Omit<
     RunResult<Test>,
-    | 'filterTestErrors'
+    | 'filterTestsErrors'
     | 'onSuiteEndErrors'
     | 'onSuiteStartErrors'
     | 'onTestEndErrors'
     | 'onTestStartErrors'
   >
 > & {
-  filterTestErrors: FilterTestError<Test>[];
+  filterTestsErrors: FilterTestError<Test>[];
   onSuiteEndErrors: unknown[];
   onSuiteStartErrors: unknown[];
   onTestEndErrors: TestEndError<Test>[];
@@ -68,6 +80,8 @@ export type MutableRunResult<Test extends BaseTest> = Mutable<
 export type NotStartedTestStatus = 'hasNoBody' | 'skipped' | 'wasNotRunInTime';
 
 export type Options<Test extends BaseTest> = Partial<RunOptions<Test>>;
+
+export type Payload = Readonly<Record<string, unknown>>;
 
 export type Runner<Test extends BaseTest> = Generator<
   RunnerState,
@@ -87,6 +101,7 @@ export type RunOptions<Test extends BaseTest> = Readonly<{
   maxFailures: number;
   name: string;
   now: (this: void) => number;
+  onelineTapOutput: boolean;
   onSuiteEnd: (
     this: Suite<Test>,
     options: Options<Test>,
@@ -108,7 +123,7 @@ export type RunStatus = InterruptedRunStatus | 'failed' | 'passed';
 
 export type RunResult<Test extends BaseTest> = Readonly<{
   duration: number;
-  filterTestErrors: readonly FilterTestError<Test>[];
+  filterTestsErrors: readonly FilterTestError<Test>[];
   name: string;
   onSuiteEndErrors: readonly unknown[];
   onSuiteStartErrors: readonly unknown[];
@@ -176,8 +191,8 @@ export type TestUnits<Test extends BaseTest> = Generator<
 >;
 
 export type TestWithCounters<Test extends BaseTest> = Readonly<{
-  repeatsCount: number;
-  retriesCount: number;
+  repeatIndex: number;
+  retryIndex: number;
   test: Test;
 }>;
 

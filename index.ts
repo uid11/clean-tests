@@ -1,4 +1,5 @@
 import type {
+  AssertValueIsTrue,
   BaseTest,
   Body,
   CachedBodiesCreator,
@@ -10,6 +11,7 @@ import type {
   Mutable,
   MutableRunResult,
   Options,
+  Payload,
   Runner,
   RunOptions,
   RunResult,
@@ -27,6 +29,40 @@ import type {
 } from './types';
 
 /**
+ * Asserts that the value is `true` (strictly equal to `true`).
+ */
+export const assertValueIsTrue: AssertValueIsTrue = (
+  value: unknown,
+  messageOrPayload?: Payload | string,
+  payload?: Payload,
+) => {
+  assertValueIsTrue.assertCount += 1;
+
+  const event = value === true ? 'onPass' : 'onFailure';
+
+  if (typeof messageOrPayload === 'string') {
+    assertValueIsTrue[event]?.(value, messageOrPayload, payload);
+  } else {
+    assertValueIsTrue[event]?.(value, undefined, messageOrPayload ?? payload);
+  }
+};
+
+assertValueIsTrue.assertCount = 0;
+assertValueIsTrue.onFailure = (value, message, payload) => {
+  const payloadString = payload
+    ? ' ' +
+      JSON.stringify(
+        payload,
+        (_key, val: unknown) =>
+          typeof val === 'function' ? String(val) : val instanceof Error ? val.stack : val,
+        2,
+      )
+    : '';
+
+  throw new Error(`${message ? message + ': ' : ''}${value} is not true${payloadString}`);
+};
+
+/**
  * Class `Suite` for creation a suite of tests.
  */
 export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test> {
@@ -38,11 +74,11 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
 
     if (typeof nameOrOptions === 'string') {
       this.name = nameOrOptions;
+
+      Object.assign(this, options);
     } else {
       Object.assign(this, nameOrOptions);
     }
-
-    Object.assign(this, options);
   }
 
   addFunctionToScope(fn: Function, name?: string): void {
@@ -136,7 +172,7 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
     const {onTestEnd = this.onTestEnd, onTestStart = this.onTestStart} = options;
     let result: TestResult;
     const {status} = endResult;
-    const {repeatsCount, retriesCount, test} = unit;
+    const {repeatIndex, retryIndex, test} = unit;
 
     if (status === 'interrupted') {
       result = {
@@ -147,7 +183,7 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
         status,
       };
     } else if (status === 'hasNoBody' || status === 'skipped' || status === 'wasNotRunInTime') {
-      const event: TestStartEvent<Test> = {repeatsCount, retriesCount, status, test};
+      const event: TestStartEvent<Test> = {repeatIndex, retryIndex, status, test};
 
       try {
         onTestStart.call(this, options, event);
@@ -164,7 +200,7 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
 
     const tapOutput = this.getTestTapOutput(options, unit, result);
 
-    const event: TestEndEvent<Test> = {repeatsCount, result, retriesCount, tapOutput, test};
+    const event: TestEndEvent<Test> = {repeatIndex, result, retryIndex, tapOutput, test};
 
     try {
       onTestEnd.call(this, options, event);
@@ -184,18 +220,21 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
   }
 
   protected getInitialRunResult(options: Options<Test>): MutableRunResult<Test> {
+    const {name = this.name} = options;
+    const escapedName = this.escapeTapOutput(name);
+
     return {
       ...this.statusCounters,
       duration: 0,
-      filterTestErrors: [],
-      name: options.name ?? this.name,
+      filterTestsErrors: [],
+      name,
       onSuiteEndErrors: [],
       onSuiteStartErrors: [],
       onTestEndErrors: [],
       onTestStartErrors: [],
       runStatus: 'passed',
       startTime: new Date(),
-      tapOutput: 'Bail out! The suite run did not work to the end.\n1..0\n',
+      tapOutput: `Bail out! The suite run did not work to the end.\n1..0 # ${escapedName} (no tests were run)\n`,
       testsInRun: 0,
       testsInSuite: this.tests.length,
     };
@@ -273,7 +312,8 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
     }
   }
 
-  protected getRunResultTapOutput(_options: Options<Test>, runResult: RunResult<Test>): string {
+  protected getRunResultTapOutput(options: Options<Test>, runResult: RunResult<Test>): string {
+    const {name = this.name} = options;
     const {runStatus} = runResult;
     const bailOut =
       runStatus === 'failed' || runStatus === 'passed'
@@ -283,7 +323,8 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
       .map((status) => (runResult[status] > 0 ? `${status}: ${runResult[status]}` : undefined))
       .filter((counter) => counter !== undefined)
       .join(', ');
-    const plan = `1..${runResult.testsInRun} # ${counters === '' ? 'No tests were run.' : counters}\n`;
+    const escapedName = this.escapeTapOutput(name);
+    const plan = `1..${runResult.testsInRun} # ${escapedName} (${counters === '' ? 'no tests were run' : counters})\n`;
 
     return bailOut + plan;
   }
@@ -327,18 +368,19 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
   }
 
   protected getTestTapOutput(
-    _options: Options<Test>,
+    options: Options<Test>,
     unit: TestUnit<Test>,
     result: TestResult,
   ): string {
-    const {status} = result;
+    const {duration, error, hasError, status} = result;
 
     if (status === 'interrupted' || status === 'wasNotRunInTime') {
       return '';
     }
 
     const {escapeTapOutput} = this;
-    const {test} = unit;
+    const {onelineTapOutput = this.onelineTapOutput} = options;
+    const {repeatIndex, retryIndex, test} = unit;
     const description = escapeTapOutput(test.name);
     let directive = '';
     const isOk = status !== 'failed' && status !== 'timedOut';
@@ -360,18 +402,40 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
 
     const testPoint = `${isOk ? '' : 'not '}ok ${testNumber} - ${description}${directive}\n`;
 
-    if (isOk) {
+    if (isOk && onelineTapOutput) {
       return testPoint;
     }
 
-    const errorMessage = result.hasError
-      ? String(result.error)
-      : status === 'timedOut'
-        ? `${test.timeout}ms timeout expired`
-        : '';
-    const error = '    ' + errorMessage.split('\n').join('\n    ');
+    const fields: string[] = [`duration: ${duration}`];
 
-    return `${testPoint}  ---\n  duration: ${result.duration}\n  error: |\n${error}\n  ...\n`;
+    if (hasError || status === 'timedOut') {
+      const errorMessage = hasError
+        ? String(error instanceof Error ? error.stack : error)
+        : status === 'timedOut'
+          ? `${test.timeout}ms timeout expired`
+          : '';
+      const errorMessageWithIndent = errorMessage.split('\n').join('\n    ');
+
+      fields.push(`error: |\n    ${errorMessageWithIndent}`);
+    }
+
+    if (test.parameters.length > 0) {
+      fields.push(`parameters: ${JSON.stringify(test.parameters)}`);
+    }
+
+    if (repeatIndex > 1) {
+      fields.push(`repeatIndex: ${repeatIndex}`);
+    }
+
+    if (retryIndex > 0) {
+      fields.push(`retryIndex: ${retryIndex}`);
+    }
+
+    if (status === 'hasNoBody' || status === 'timedOut') {
+      fields.push(`status: ${status}`);
+    }
+
+    return `${testPoint}  ---\n  ${fields.join('\n  ')}\n  ...\n`;
   }
 
   protected *getTestUnits(options: Options<Test>): TestUnits<Test> {
@@ -395,7 +459,7 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
         try {
           return filterTests.call(this, options, test);
         } catch (error) {
-          this.runResult?.filterTestErrors.push({error, test});
+          this.runResult?.filterTestsErrors.push({error, test});
 
           return false;
         }
@@ -404,30 +468,30 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
 
     const retries: TestWithCounters<Test>[] = [];
 
-    const onEnd: TestUnitOnEnd<Test> = ({repeatsCount, retriesCount, test}, {status}) => {
+    const onEnd: TestUnitOnEnd<Test> = ({repeatIndex, retryIndex, test}, {status}) => {
       if (status !== 'failed' && status !== 'timedOut') {
         return;
       }
 
-      const newRetriesCount = retriesCount + 1;
+      const newRetryIndex = retryIndex + 1;
 
-      if (newRetriesCount <= test.retries) {
-        retries.unshift({repeatsCount, retriesCount: newRetriesCount, test});
+      if (newRetryIndex <= test.retries) {
+        retries.unshift({repeatIndex, retryIndex: newRetryIndex, test});
       }
     };
 
-    let repeatsIndex = 1;
+    let currentRepeatIndex = 1;
     let testIndex = 0;
 
     while (true) {
       if (retries.length > 0) {
-        const {repeatsCount, retriesCount, test} = retries.pop()!;
+        const {repeatIndex, retryIndex, test} = retries.pop()!;
 
         yield {
           isEnded: false,
           onEnd,
-          repeatsCount,
-          retriesCount,
+          repeatIndex,
+          retryIndex,
           status: undefined,
           test,
         };
@@ -451,34 +515,34 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
         yield {
           isEnded: false,
           onEnd: undefined,
-          repeatsCount: 0,
-          retriesCount: 0,
+          repeatIndex: 0,
+          retryIndex: 0,
           status: 'skipped',
           test,
         };
 
-        repeatsIndex = 1;
+        currentRepeatIndex = 1;
         testIndex += 1;
 
         continue;
       }
 
-      if (repeatsIndex <= test.repeats) {
+      if (currentRepeatIndex <= test.repeats) {
         yield {
           isEnded: false,
           onEnd: test.retries > 0 ? onEnd : undefined,
-          repeatsCount: repeatsIndex,
-          retriesCount: 0,
+          repeatIndex: currentRepeatIndex,
+          retryIndex: 0,
           status: undefined,
           test,
         };
 
-        repeatsIndex += 1;
+        currentRepeatIndex += 1;
 
         continue;
       }
 
-      repeatsIndex = 1;
+      currentRepeatIndex = 1;
       testIndex += 1;
     }
   }
@@ -489,6 +553,8 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
 
   now: (this: void) => number =
     globalThis.performance?.now.bind(globalThis.performance) || Date.now;
+
+  onelineTapOutput = false;
 
   onSuiteStart(this: Suite<Test>, options: Options<Test>): Promise<void> | void {
     const {print = this.print} = options;
@@ -625,7 +691,7 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
   protected runResult: MutableRunResult<Test> | undefined;
 
   protected runTestUnit(options: Options<Test>, unit: TestUnit<Test>): Task<Test> | undefined {
-    const {repeatsCount, retriesCount, test} = unit;
+    const {repeatIndex, retryIndex, test} = unit;
 
     if (unit.status !== undefined) {
       this.endTest(options, unit, {status: unit.status});
@@ -642,7 +708,7 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
     }
 
     const {onTestStart = this.onTestStart} = options;
-    const event: TestStartEvent<Test> = {repeatsCount, retriesCount, status: undefined, test};
+    const event: TestStartEvent<Test> = {repeatIndex, retryIndex, status: undefined, test};
 
     try {
       onTestStart.call(this, options, event);
@@ -655,7 +721,7 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
 
       this.bodiesCache = Object.create(null);
       this.cachedBodiesCreator = new Function(
-        `"use strict";var{${names}}=this.scope;return eval(this.source)`,
+        `'use strict';var{${names}}=this.scope;return eval('('+this.source+')')`,
       ) as CachedBodiesCreator;
     }
 
@@ -664,7 +730,29 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
     let bodyWithScope = this.bodiesCache[source];
 
     if (bodyWithScope === undefined) {
-      bodyWithScope = this.cachedBodiesCreator.call({scope: this.scope, source}) as Function;
+      try {
+        bodyWithScope = this.cachedBodiesCreator.call({scope: this.scope, source}) as Function;
+      } catch {
+        if (source.includes('[native code]') && source.startsWith('function ')) {
+          bodyWithScope = body;
+        } else {
+          const objectWithBody = this.cachedBodiesCreator.call({
+            scope: this.scope,
+            source: '{' + source + '}',
+          }) as Readonly<Record<string, Function>>;
+
+          for (const key in objectWithBody) {
+            bodyWithScope = objectWithBody[key];
+
+            break;
+          }
+        }
+      }
+
+      if (typeof bodyWithScope !== 'function') {
+        throw new Error(`Cannot parse body of test from source: ${source}`);
+      }
+
       this.bodiesCache[source] = bodyWithScope;
     }
 
@@ -700,6 +788,15 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
 
     try {
       result = bodyWithScope(...parameters);
+
+      if (
+        result != null &&
+        (typeof result === 'object' || typeof result === 'function') &&
+        'next' in result &&
+        typeof result.next === 'function'
+      ) {
+        result = result.next();
+      }
     } catch (catchedError) {
       error = catchedError;
       hasError = true;

@@ -1,7 +1,7 @@
 {
   "name": "clean-tests",
-  "version": "0.0.1",
-  "description": "Clean tests with isolated scope ✅️️",
+  "version": "0.0.2",
+  "description": "A lightweight pure ECMAScript test library with a programmatic API for any ECMAScript/TypeScript environment",
   "author": "uid11",
   "bugs": "https://github.com/uid11/clean-tests/issues",
   "devDependencies": {
@@ -23,9 +23,13 @@
   ],
   "homepage": "https://github.com/uid11/clean-tests#readme",
   "keywords": [
-    "clean code",
-    "tests",
-    "unit tests"
+    "ecmascript",
+    "programmatic",
+    "tap",
+    "test",
+    "test runner",
+    "typescript",
+    "unit testing"
   ],
   "license": "MIT",
   "packageManager": "npm@10",
