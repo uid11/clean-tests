@@ -17,7 +17,7 @@ assertValueIsTrue(unknownValue);
 unknownValue satisfies true;
 unknownValue = true;
 
-// @ts-expect-error
+// @ts-expect-error: `unknownValue` now has type `unknown`
 unknownValue satisfies true;
 
 assertValueIsTrue(unknownValue, 'some message');
@@ -159,7 +159,7 @@ suiteWithOnly.addTest(
   {parameters: ['foo', 34]},
   (text, counter: number) => {
     assertValueIsTrue(text === 'foo', 'string parameter is correct');
-    // @ts-expect-error
+    // @ts-expect-error: `text` now has type `'foo'`
     assertValueIsTrue(text === 'bar', 'second string parameter is correct');
     assertValueIsTrue(counter === 35, 'number parameter is correct');
   },
@@ -317,6 +317,10 @@ suiteWithTodo.addTest('some name', () => {
   assertTestsCounter(3);
 });
 
+suiteWithTodo.addTest({}, () => {
+  assertTestsCounter(3);
+});
+
 suiteWithTodo.addFunctionToScope(assertTestsCounter);
 
 testsCounter = 0;
@@ -325,9 +329,12 @@ const todoResult = await suiteWithTodo.run({
   filterTests: (_options, {name}) => name === 'anonymous',
 });
 
-assertValueIsTrue(todoResult.runStatus === 'passed', 'todo test does not affect the run status');
 assertValueIsTrue(
-  todoResult.passed === 1 && todoResult.testsInRun === 2 && todoResult.testsInSuite === 3,
+  todoResult.runStatus === 'passed',
+  'todo test runs but does not affect the run status of suite',
+);
+assertValueIsTrue(
+  todoResult.passed === 2 && todoResult.testsInRun === 3 && todoResult.testsInSuite === 4,
   'filterTests works correctly',
 );
 
@@ -469,7 +476,7 @@ try {
     error instanceof Error &&
       error.message.includes('assertTestsCounter') &&
       error.message.includes('already exists'),
-    'addFunctionToScope checks changes in scope',
+    'addFunctionToScope(...) checks changes in scope',
   );
 }
 
@@ -482,7 +489,7 @@ try {
     error instanceof Error &&
       error.message.includes('1234') &&
       error.message.includes('is not a valid identifier'),
-    'addFunctionToScope checks function names',
+    'addFunctionToScope(...) checks function names',
     {error},
   );
 }
@@ -985,6 +992,7 @@ const errorsResult = await suiteWithErrors.run();
 
 assertValueIsTrue(
   errorsResult.runStatus === 'passed' &&
+    errorsResult.failed === 0 &&
     errorsResult.filterTestsErrors.length === 3 &&
     errorsResult.onSuiteEndErrors.length === 1 &&
     errorsResult.onSuiteStartErrors.length === 1 &&
@@ -1108,7 +1116,7 @@ suiteWithTodoTests.addTest({
   todo: '',
 });
 
-// @ts-expect-error
+// @ts-expect-error: expected at least one argument
 suiteWithTodoTests.addTest();
 
 const todoTestsResult = await suiteWithTodoTests.run();
@@ -1147,6 +1155,149 @@ assertValueIsTrue(
     onlyTodoTestsResult.testsInSuite === 16,
   'only option takes precedence over all other options and filtering',
   {onlyTodoTestsResult},
+);
+
+const syncSuite = new Suite({
+  onSuiteEnd() {
+    assertTestsCounter(5);
+  },
+  onSuiteStart() {
+    assertTestsCounter(1);
+  },
+});
+
+syncSuite.addFunctionToScope(assertTestsCounter);
+
+syncSuite.addTest(() => {
+  assertTestsCounter(2);
+});
+
+syncSuite.addTest(() => {
+  assertTestsCounter(3);
+});
+
+syncSuite.addTest(() => {
+  assertTestsCounter(4);
+});
+
+testsCounter = 0;
+
+const syncSuitePromise = syncSuite.run();
+
+assertTestsCounter(6);
+
+const syncSuiteResult = await syncSuitePromise;
+
+assertTestsCounter(7);
+
+assertValueIsTrue(
+  syncSuiteResult.runStatus === 'passed' &&
+    syncSuiteResult.failed === 0 &&
+    syncSuiteResult.hasNoBody === 0 &&
+    syncSuiteResult.passed === 3 &&
+    syncSuiteResult.testsInRun === 3 &&
+    syncSuiteResult.testsInSuite === 3,
+  'synchronous test suite is executed entirely within the current microtask',
+  {syncSuiteResult},
+);
+
+syncSuite.addTest(async () => {
+  assertTestsCounter(5);
+});
+
+syncSuite.addTest(() => {
+  assertTestsCounter(7);
+});
+
+testsCounter = 0;
+
+const syncSuiteWithAsyncPromise = syncSuite.run({
+  onSuiteEnd() {
+    assertTestsCounter(8);
+  },
+});
+
+assertTestsCounter(6);
+
+const syncSuiteWithAsyncResult = await syncSuiteWithAsyncPromise;
+
+assertTestsCounter(9);
+
+assertValueIsTrue(
+  syncSuiteWithAsyncResult.runStatus === 'passed' &&
+    syncSuiteWithAsyncResult.failed === 0 &&
+    syncSuiteWithAsyncResult.hasNoBody === 0 &&
+    syncSuiteWithAsyncResult.passed === 5 &&
+    syncSuiteWithAsyncResult.testsInRun === 5 &&
+    syncSuiteWithAsyncResult.testsInSuite === 5,
+  'asynchronous tests are executed within the next microtask',
+  {syncSuiteWithAsyncResult},
+);
+
+const suiteForAddTest = new Suite();
+
+suiteForAddTest.addFunctionToScope(assertTestsCounter);
+
+suiteForAddTest.addTest('The test only with the name');
+
+suiteForAddTest.addTest('The test with the body', () => {
+  assertTestsCounter(1);
+});
+
+suiteForAddTest.addTest('The test with the body in options', {
+  body: async function () {
+    assertTestsCounter(2);
+  },
+});
+
+const higherPriorityName = 'Higher priority name';
+
+suiteForAddTest.addTest('The test with both names', {
+  body: async function* (_name) {
+    assertTestsCounter(3);
+  },
+  name: higherPriorityName,
+  parameters: ['checkName'],
+});
+
+suiteForAddTest.addTest(
+  'The body from the test options has higher priority',
+  {
+    body: function* () {
+      assertTestsCounter(4);
+    },
+  },
+  () => {
+    throw new Error('foo');
+  },
+);
+
+testsCounter = 0;
+
+const suiteForAddTestResult = await suiteForAddTest.run({
+  onTestStart(_options, {test}) {
+    if (test.parameters[0] === 'checkName') {
+      assertValueIsTrue(
+        test.name === higherPriorityName,
+        'The name from the test options has higher priority',
+        {test},
+      );
+    } else {
+      assertValueIsTrue(test.parameters.length === 0, 'Test parameters are correct', {test});
+    }
+  },
+});
+
+assertValueIsTrue(
+  suiteForAddTestResult.runStatus === 'passed' &&
+    suiteForAddTestResult.failed === 0 &&
+    suiteForAddTestResult.hasNoBody === 1 &&
+    suiteForAddTestResult.onTestStartErrors.length === 0 &&
+    suiteForAddTestResult.passed === 4 &&
+    suiteForAddTestResult.testsInRun === 5 &&
+    suiteForAddTestResult.testsInSuite === 5,
+  'addTest(...) works correctly with any valid set of arguments',
+  {suiteForAddTestResult},
 );
 
 ok(`All ${assertValueIsTrue.assertCount} tests passed in ${Date.now() - startTestsTime}ms!`);

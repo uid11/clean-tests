@@ -202,6 +202,13 @@ export type TestWithParameters<Test extends BaseTest, Parameters extends readonl
 > &
   Omit<Partial<Test>, 'body' | 'parameters'>;
 
+/**
+ * Thenable object, that is, an object with a `then` method.
+ */
+export type Thenable = Readonly<{
+  then: Promise<unknown>['then'];
+}>;
+
 type WithStatus<SomeStatus extends Status> = SomeStatus extends Status
   ? Readonly<{status: SomeStatus}>
   : never;

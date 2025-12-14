@@ -26,6 +26,7 @@ import type {
   TestUnits,
   TestWithCounters,
   TestWithParameters,
+  Thenable,
 } from './types';
 
 /**
@@ -75,9 +76,9 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
     if (typeof nameOrOptions === 'string') {
       this.name = nameOrOptions;
 
-      Object.assign(this, options);
+      Object.assign<Suite<Test>, Options<Test> | undefined>(this, options);
     } else {
-      Object.assign(this, nameOrOptions);
+      Object.assign<Suite<Test>, Options<Test> | undefined>(this, nameOrOptions);
     }
   }
 
@@ -127,7 +128,10 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
         test.body = optionsOrBody;
       } else {
         test.body = body;
-        Object.assign(test, optionsOrBody);
+        Object.assign<
+          TestWithParameters<BaseTest, Parameters>,
+          TestWithParameters<Test, Parameters> | undefined
+        >(test, optionsOrBody);
       }
     } else if (typeof nameOrBodyOrOptions === 'function') {
       test.body = nameOrBodyOrOptions;
@@ -136,7 +140,10 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
         test.body = optionsOrBody;
       }
 
-      Object.assign(test, nameOrBodyOrOptions);
+      Object.assign<
+        TestWithParameters<BaseTest, Parameters>,
+        TestWithParameters<Test, Parameters> | undefined
+      >(test, nameOrBodyOrOptions);
     }
 
     this.tests.push(test as Partial<BaseTest> as Partial<Test>);
@@ -547,6 +554,15 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
     }
   }
 
+  protected isThenable<Type>(value: Type): value is Type & Thenable {
+    return (
+      value != null &&
+      (typeof value === 'object' || typeof value === 'function') &&
+      'then' in value &&
+      typeof value.then === 'function'
+    );
+  }
+
   maxFailures: number = Infinity;
 
   name = 'anonymous';
@@ -629,7 +645,11 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
     this.runResult = this.getInitialRunResult(options);
 
     try {
-      await onSuiteStart.call(this, options);
+      const result = onSuiteStart.call(this, options);
+
+      if (this.isThenable(result)) {
+        await result;
+      }
     } catch (error) {
       this.runResult.onSuiteStartErrors.push(error);
     }
@@ -678,7 +698,11 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
     this.runResult.duration = now() - start;
 
     try {
-      await onSuiteEnd.call(this, options, this.runResult);
+      const result = onSuiteEnd.call(this, options, this.runResult);
+
+      if (this.isThenable(result)) {
+        await result;
+      }
     } catch (error) {
       this.runResult.onSuiteEndErrors.push(error);
     }
@@ -802,12 +826,7 @@ export class Suite<Test extends BaseTest = BaseTest> implements RunOptions<Test>
       hasError = true;
     }
 
-    if (
-      result == null ||
-      (typeof result !== 'object' && typeof result !== 'function') ||
-      !('then' in result) ||
-      typeof result.then !== 'function'
-    ) {
+    if (!this.isThenable(result)) {
       onEnd();
 
       return;

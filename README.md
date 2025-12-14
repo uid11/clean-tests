@@ -7,13 +7,13 @@
 [![Conventional Commits][conventional-commits-image]][conventional-commits-url]
 [![License MIT][license-image]][license-url]
 
-A lightweight, zero-overhead ECMAScript test library with a programmatic API for any ECMAScript/TypeScript environment.
+A lightweight, zero-overhead pure ECMAScript test library with a programmatic API for any ECMAScript/TypeScript environment.
 
 We create a `suite` of tests as a regular instance of the `Suite` class,
 fill it with tests using the `suite.addTest` method, possibly export it, and run it using the `suite.run` method.
 
 The tests are run in the same thread as the `suite.run` call, but in an isolated scope,
-meaning that variables from the closure will not be available in the tests.
+meaning that variables from the closure will not be available in the tests code.
 To access the utilities, asserts, and functions being tested in the suite,
 we explicitly add them as functions to the suite scope using the `suite.addFunctionToScope` method.
 

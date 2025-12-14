@@ -8,6 +8,7 @@
     "isolatedDeclarations": true,
     "libReplacement": false,
     "module": "preserve",
+    "moduleDetection": "force",
     "noEmitOnError": true,
     "noFallthroughCasesInSwitch": true,
     "noImplicitOverride": true,
